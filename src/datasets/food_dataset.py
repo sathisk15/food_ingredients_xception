@@ -10,18 +10,26 @@ class FoodDataset(Dataset):
     """
     Returns:
         image_tensor: FloatTensor [3, H, W]
-        ingredients_raw: str
+        label: FloatTensor [num_classes]
     """
 
-    def __init__(self, csv_path, images_dir, image_size):
+    def __init__(
+        self,
+        csv_path,
+        images_dir,
+        image_size,
+        labels_path,
+        image_ids_path="data/processed/image_ids.txt",
+    ):
         self.images_dir = images_dir
         self.image_size = image_size
 
         df = pd.read_csv(csv_path)
+        labels = np.load(labels_path)
 
-        required_cols = {"Image_Name", "Ingredients"}
-        if not required_cols.issubset(df.columns):
-            raise ValueError(f"CSV must contain columns: {required_cols}")
+        # Load kept image IDs (AFTER pruning)
+        with open(image_ids_path) as f:
+            image_ids = [line.strip() for line in f]
 
         # Build image stem -> filename mapping
         image_map = {}
@@ -30,39 +38,39 @@ class FoodDataset(Dataset):
             if ext.lower() in {".jpg", ".jpeg", ".png"}:
                 image_map[stem] = fname
 
-        # Filter rows with valid images only
         valid_rows = []
-        for _, row in df.iterrows():
-            stem = row["Image_Name"]
-            if isinstance(stem, str) and stem in image_map:
-                valid_rows.append(row)
+        valid_labels = []
 
-        if len(valid_rows) == 0:
-            raise RuntimeError("No valid image entries found after filtering")
+        for idx, image_id in enumerate(image_ids):
+            row = df[df["Image_Name"] == image_id]
+            if len(row) == 0:
+                continue
+            if image_id not in image_map:
+                continue
+
+            valid_rows.append(row.iloc[0])
+            valid_labels.append(labels[idx])
 
         self.df = pd.DataFrame(valid_rows).reset_index(drop=True)
+        self.labels = torch.from_numpy(np.stack(valid_labels)).float()
         self.image_map = image_map
+
+        assert len(self.df) == len(self.labels)
 
     def __len__(self):
         return len(self.df)
 
     def _load_image(self, image_stem):
         image_path = os.path.join(self.images_dir, self.image_map[image_stem])
-
         img = Image.open(image_path).convert("RGB")
         img = img.resize((self.image_size, self.image_size))
-
-        img = np.array(img, dtype=np.float32) / 255.0
-        img = torch.from_numpy(img).permute(2, 0, 1)
-
+        img = torch.from_numpy(
+            np.array(img, dtype=np.float32) / 255.0
+        ).permute(2, 0, 1)
         return img
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        image_stem = row["Image_Name"]
-        ingredients_raw = row["Ingredients"]
-
+        image_stem = self.df.iloc[idx]["Image_Name"]
         image = self._load_image(image_stem)
-
-        return image, ingredients_raw
-  
+        label = self.labels[idx]
+        return image, label
